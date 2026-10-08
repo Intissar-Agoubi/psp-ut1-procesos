@@ -2,10 +2,11 @@ package es.dam.psp.ut1.practicas
 
 import es.dam.psp.ut1.Jvm
 import java.io.File
+import java.nio.charset.Charset
 import kotlin.time.measureTime
 
 /**
- * Coordinador.kt · Práctica 4 · proceso PADRE. Completa los TODO 4.a … 4.e (letras de la práctica).
+ * Coordinador.kt · Práctica 4 · proceso PADRE.
  *
  * Apuntes UT-1, apartados 5.2 (Jvm.proceso), 5.1 (redirectInput), 6 (leer antes de esperar)
  * y 6.3 (lanzar todos y después esperar a todos).
@@ -14,7 +15,7 @@ import kotlin.time.measureTime
  *
  * Reparte los ficheros de datos/ entre procesos hijo Contador, recoge sus resultados
  * y muestra el total. Compara el tiempo en modo secuencial y en modo concurrente.
- * Mejora opcional: añade concurrenteLimitado(ficheros, maximo) y mídelo con 1, 2, 4 y 8.
+ * Mejora opcional: concurrenteLimitado(ficheros, maximo), medido con 1, 2, 4 y 8.
  */
 
 /** Resultado que devuelve un hijo para un fichero. */
@@ -29,29 +30,66 @@ data class Resultado(
 const val CLASE_HIJO = "es.dam.psp.ut1.practicas.ContadorKt"   // main de Contador.kt
 
 /**
- * Crea y ARRANCA un proceso Contador cuya entrada estándar sea [fichero].
- * Pista: Jvm.proceso(...) y redirectInput(...). Hereda la salida de error del hijo.
+ * Codificación con la que escribe el hijo cuando su salida va a una tubería: la nativa del sistema
+ * (Cp1252 en Windows, UTF-8 en Linux/macOS). Así las tildes de la palabra más frecuente se leen bien.
  */
-fun lanzarContador(fichero: File): Process {
-    TODO("Práctica 4.a")   // TODO 4.a
-}
+private val CODIFICACION_HIJO: Charset = Charset.forName(System.getProperty("native.encoding"))
+
+/** 4.a · Crea y ARRANCA un Contador cuya entrada estándar es [fichero]. Hereda su salida de error. */
+fun lanzarContador(fichero: File): Process =
+    Jvm.proceso(CLASE_HIJO)
+        .redirectInput(fichero)
+        .redirectError(ProcessBuilder.Redirect.INHERIT)
+        .start()
 
 /**
- * Lee la línea que ha escrito el hijo, espera a que termine y construye el Resultado.
- * Si el código de salida no es 0, lanza una IllegalStateException con un mensaje claro.
+ * 4.b · Lee la línea del hijo, espera a que termine y construye el Resultado.
+ * Si el código de salida no es 0, lanza una IllegalStateException.
  */
 fun recogerResultado(fichero: File, hijo: Process): Resultado {
-    TODO("Práctica 4.b")   // TODO 4.b
+    val linea = hijo.inputStream.bufferedReader(CODIFICACION_HIJO).use { it.readLine() }   // leer ANTES de esperar
+    val codigo = hijo.waitFor()
+    if (codigo != 0 || linea == null) {
+        throw IllegalStateException("El Contador de ${fichero.name} ha terminado con código $codigo")
+    }
+    val campos = linea.split(";")
+    if (campos.size != 4) {
+        throw IllegalStateException("Respuesta inesperada del Contador de ${fichero.name}: $linea")
+    }
+    return Resultado(fichero.name, campos[0].toLong(), campos[1].toLong(), campos[2].toLong(), campos[3])
 }
 
-/** Procesa los ficheros uno detrás de otro: lanzar, esperar, lanzar, esperar... */
-fun secuencial(ficheros: List<File>): List<Resultado> {
-    TODO("Práctica 4.c")   // TODO 4.c
-}
+/** 4.c · Procesa los ficheros uno detrás de otro: lanzar, esperar, lanzar, esperar... */
+fun secuencial(ficheros: List<File>): List<Resultado> =
+    ficheros.map { f -> recogerResultado(f, lanzarContador(f)) }
 
-/** Lanza TODOS los hijos a la vez y después recoge los resultados. */
+/** 4.d · Lanza TODOS los hijos a la vez y después recoge los resultados. */
 fun concurrente(ficheros: List<File>): List<Resultado> {
-    TODO("Práctica 4.d")   // TODO 4.d
+    val hijos = ficheros.map { f -> f to lanzarContador(f) }        // 1. lanzar todos
+    return hijos.map { (f, hijo) -> recogerResultado(f, hijo) }      // 2. esperar a todos
+}
+
+/** Mejora opcional · Nunca tiene más de [maximo] hijos vivos a la vez: los procesa en grupos. */
+fun concurrenteLimitado(ficheros: List<File>, maximo: Int): List<Resultado> {
+    require(maximo >= 1) { "El máximo de hijos debe ser al menos 1" }
+    return ficheros.chunked(maximo).flatMap { grupo -> concurrente(grupo) }
+}
+
+/** 4.e · Muestra una fila por fichero y una fila TOTAL con líneas, palabras y caracteres sumados. */
+fun mostrarTabla(resultados: List<Resultado>) {
+    val cabecera = "%-12s %10s %10s %12s  %s"
+    val fila = "%-12s %10d %10d %12d  %s"
+    println(cabecera.format("FICHERO", "LÍNEAS", "PALABRAS", "CARACTERES", "MÁS FRECUENTE"))
+    resultados.forEach { r -> println(fila.format(r.fichero, r.lineas, r.palabras, r.caracteres, r.masFrecuente)) }
+    println(
+        fila.format(
+            "TOTAL",
+            resultados.sumOf { it.lineas },
+            resultados.sumOf { it.palabras },
+            resultados.sumOf { it.caracteres },
+            ""
+        )
+    )
 }
 
 fun main() {
@@ -68,10 +106,22 @@ fun main() {
     val t1 = measureTime { r1 = secuencial(ficheros) }
     val t2 = measureTime { r2 = concurrente(ficheros) }
 
-    // TODO 4.e: muestra una tabla con el resultado de cada fichero y una fila TOTAL
-    //  (líneas, palabras y caracteres sumados). Comprueba que r1 y r2 coinciden.
+    // 4.e: tabla de resultados y comprobación de que los dos modos coinciden
+    println()
+    mostrarTabla(r1)
+    println()
+    println("¿Secuencial y concurrente dan el mismo resultado? ${if (r1 == r2) "sí" else "NO"}")
 
+    println()
     println("Secuencial:  $t1")
     println("Concurrente: $t2")
-    // Práctica 4.f: ejecútalo tres veces y calcula la aceleración t1 / t2
+    println("Aceleración: %.2f".format(t1 / t2))   // 4.f: t1 / t2
+
+    // Mejora opcional: concurrente con un máximo de hijos vivos a la vez
+    println()
+    println("Concurrente limitado:")
+    for (maximo in listOf(1, 2, 4, 8)) {
+        val t = measureTime { concurrenteLimitado(ficheros, maximo) }
+        println("  máximo $maximo hijo(s): $t")
+    }
 }
